@@ -1,5 +1,5 @@
 # .github/workflows/management.yml
-name: 🚀 Ultimate VPN System Management
+name: 🚀 Ultimate VPN System Management V2
 
 on:
   # Allows manual triggering from the GitHub Actions UI for admin tasks
@@ -11,37 +11,68 @@ on:
         type: choice
         options:
         - generate_new_config
-        - scan_and_update_ip
+        - scan_and_update_default_ip
+        - manually_update_regional_ip
+
+      # Inputs for 'generate_new_config'
       user_id:
-        description: 'User ID for new config (e.g., user_01, client_name)'
+        description: 'User ID for new config (e.g., my-friend-01)'
         required: false
       duration_days:
-        description: 'Subscription duration in days (e.g., 30)'
+        description: 'Subscription duration in days'
         required: false
         default: '30'
+      region:
+        description: 'IP Region for the config'
+        required: false
+        type: choice
+        options:
+        - default
+        - de # Germany
+        - ir # Iran (if you have a specific IP)
+        default: 'default'
+      block_porn:
+        description: 'Block adult content via DNS?'
+        required: false
+        type: boolean
+        default: false
 
-  # Scheduled run for IP scanning
+      # Inputs for 'manually_update_regional_ip'
+      target_region:
+        description: 'Region to update (e.g., de, ir)'
+        required: false
+      ip_address:
+        description: 'The new clean IP:Port (e.g., 162.159.192.1:2408)'
+        required: false
+
+  # Scheduled run for automatic IP scanning
   schedule:
-    # Runs every 4 hours
+    # Runs every 4 hours to find the best general-purpose IP
     - cron: '0 */4 * * *'
 
 jobs:
-  # Job to generate a new configuration
+  # ==========================================================
+  # == JOB 1: Generate a new user configuration
+  # ==========================================================
   generate_config:
     name: "✅ Generate New VPN Config"
     if: github.event.inputs.action == 'generate_new_config' && github.event.inputs.user_id != ''
     runs-on: ubuntu-latest
     steps:
-      - name: "Sending request to Cloudflare Worker..."
+      - name: "Sending request to Cloudflare Worker"
         run: |
-          echo "Generating config for user: ${{ github.event.inputs.user_id }} for ${{ github.event.inputs.duration_days }} days..."
-          response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "${{ secrets.WORKER_URL }}/api/config/generate" \
+          echo "Generating config for user: ${{ github.event.inputs.user_id }}"
+          response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+            -X POST "${{ secrets.WORKER_URL }}/api/admin/generate" \
             -H "Authorization: Bearer ${{ secrets.ADMIN_KEY }}" \
             -H "Content-Type: application/json" \
             --data '{
               "userId": "${{ github.event.inputs.user_id }}",
-              "durationDays": ${{ github.event.inputs.duration_days }}
+              "durationDays": ${{ github.event.inputs.duration_days }},
+              "region": "${{ github.event.inputs.region }}",
+              "blockPorn": ${{ github.event.inputs.block_porn }}
             }')
+          
           echo "$response"
           if [[ $(echo "$response" | grep "HTTP_STATUS:200") ]]; then
             echo "✅ Config generated successfully! Check the output above for the subscription URL."
@@ -50,19 +81,21 @@ jobs:
             exit 1
           fi
 
-  # Job to scan IPs and update the system
-  scan_and_update_ip:
-    name: "🛰️ Scan & Update WARP IP"
-    if: github.event_name == 'schedule' || github.event.inputs.action == 'scan_and_update_ip'
+  # ==========================================================
+  # == JOB 2: Automatically scan and update the default IP
+  # ==========================================================
+  scan_and_update_default_ip:
+    name: "🛰️ Scan & Update Default WARP IP"
+    if: github.event_name == 'schedule' || github.event.inputs.action == 'scan_and_update_default_ip'
     runs-on: ubuntu-latest
     steps:
-      - name: "Checking out WarpScanner repository"
+      - name: "Checkout WarpScanner repository"
         uses: actions/checkout@v4
         with:
-          repository: 'ircfspace/warpscan' # Using a reliable & fast WARP scanner for automation
+          repository: 'ircfspace/warpscan'
           path: 'warpscan'
 
-      - name: "Running WARP Scanner"
+      - name: "Running WARP Scanner for the best IP"
         id: scanner
         run: |
           cd warpscan
@@ -70,15 +103,37 @@ jobs:
           bash warpscan.sh -p10
           # The script outputs the best IP to result.csv. We read the first line.
           BEST_IP=$(head -n 1 result.csv | awk -F, '{print $1":"$2}')
+          if [[ -z "$BEST_IP" ]]; then
+            echo "::error::Scanner failed to find a valid IP."
+            exit 1
+          fi
           echo "Scanner finished. Best IP found: $BEST_IP"
           echo "best_ip=$BEST_IP" >> $GITHUB_OUTPUT
 
-      - name: "Updating IP in Cloudflare Worker"
+      - name: "Updating Default IP in Cloudflare Worker"
         if: steps.scanner.outputs.best_ip
         run: |
           echo "Sending best IP (${{ steps.scanner.outputs.best_ip }}) to Cloudflare..."
-          curl -s -f -X POST "${{ secrets.WORKER_URL }}/api/admin/update-warp-ip" \
+          curl -sf -X POST "${{ secrets.WORKER_URL }}/api/admin/update-ip" \
             -H "Authorization: Bearer ${{ secrets.ADMIN_KEY }}" \
             -H "Content-Type: application/json" \
-            --data '{"best_ip": "${{ steps.scanner.outputs.best_ip }}"}'
-          echo "✅ IP Updated Successfully!"
+            --data '{"ip": "${{ steps.scanner.outputs.best_ip }}", "region": "default"}'
+          echo "✅ Default IP Updated Successfully!"
+
+  # ==========================================================
+  # == JOB 3: Manually set an IP for a specific region
+  # ==========================================================
+  update_regional_ip:
+    name: "✏️ Manually Update Regional IP"
+    if: github.event.inputs.action == 'manually_update_regional_ip' && github.event.inputs.target_region != '' && github.event.inputs.ip_address != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Updating regional IP in Cloudflare Worker"
+        run: |
+          echo "Setting IP for region '${{ github.event.inputs.target_region }}' to '${{ github.event.inputs.ip_address }}'"
+          curl -sf -X POST "${{ secrets.WORKER_URL }}/api/admin/update-ip" \
+            -H "Authorization: Bearer ${{ secrets.ADMIN_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data '{"ip": "${{ github.event.inputs.ip_address }}", "region": "${{ github.event.inputs.target_region }}"}'
+          echo "✅ Regional IP updated successfully!"
+
