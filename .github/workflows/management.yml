@@ -1,0 +1,84 @@
+# .github/workflows/management.yml
+name: 🚀 Ultimate VPN System Management
+
+on:
+  # Allows manual triggering from the GitHub Actions UI for admin tasks
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+        - generate_new_config
+        - scan_and_update_ip
+      user_id:
+        description: 'User ID for new config (e.g., user_01, client_name)'
+        required: false
+      duration_days:
+        description: 'Subscription duration in days (e.g., 30)'
+        required: false
+        default: '30'
+
+  # Scheduled run for IP scanning
+  schedule:
+    # Runs every 4 hours
+    - cron: '0 */4 * * *'
+
+jobs:
+  # Job to generate a new configuration
+  generate_config:
+    name: "✅ Generate New VPN Config"
+    if: github.event.inputs.action == 'generate_new_config' && github.event.inputs.user_id != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Sending request to Cloudflare Worker..."
+        run: |
+          echo "Generating config for user: ${{ github.event.inputs.user_id }} for ${{ github.event.inputs.duration_days }} days..."
+          response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "${{ secrets.WORKER_URL }}/api/config/generate" \
+            -H "Authorization: Bearer ${{ secrets.ADMIN_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data '{
+              "userId": "${{ github.event.inputs.user_id }}",
+              "durationDays": ${{ github.event.inputs.duration_days }}
+            }')
+          echo "$response"
+          if [[ $(echo "$response" | grep "HTTP_STATUS:200") ]]; then
+            echo "✅ Config generated successfully! Check the output above for the subscription URL."
+          else
+            echo "❌ ERROR: Failed to generate config! See the server response above."
+            exit 1
+          fi
+
+  # Job to scan IPs and update the system
+  scan_and_update_ip:
+    name: "🛰️ Scan & Update WARP IP"
+    if: github.event_name == 'schedule' || github.event.inputs.action == 'scan_and_update_ip'
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checking out WarpScanner repository"
+        uses: actions/checkout@v4
+        with:
+          repository: 'ircfspace/warpscan' # Using a reliable & fast WARP scanner for automation
+          path: 'warpscan'
+
+      - name: "Running WARP Scanner"
+        id: scanner
+        run: |
+          cd warpscan
+          # Scan with 10 parallel threads for speed
+          bash warpscan.sh -p10
+          # The script outputs the best IP to result.csv. We read the first line.
+          BEST_IP=$(head -n 1 result.csv | awk -F, '{print $1":"$2}')
+          echo "Scanner finished. Best IP found: $BEST_IP"
+          echo "best_ip=$BEST_IP" >> $GITHUB_OUTPUT
+
+      - name: "Updating IP in Cloudflare Worker"
+        if: steps.scanner.outputs.best_ip
+        run: |
+          echo "Sending best IP (${{ steps.scanner.outputs.best_ip }}) to Cloudflare..."
+          curl -s -f -X POST "${{ secrets.WORKER_URL }}/api/admin/update-warp-ip" \
+            -H "Authorization: Bearer ${{ secrets.ADMIN_KEY }}" \
+            -H "Content-Type: application/json" \
+            --data '{"best_ip": "${{ steps.scanner.outputs.best_ip }}"}'
+          echo "✅ IP Updated Successfully!"
