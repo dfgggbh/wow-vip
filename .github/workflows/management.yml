@@ -2,7 +2,6 @@
 name: 🚀 Ultimate VPN System Management V2
 
 on:
-  # Allows manual triggering from the GitHub Actions UI for admin tasks
   workflow_dispatch:
     inputs:
       action:
@@ -14,7 +13,7 @@ on:
         - scan_and_update_default_ip
         - manually_update_regional_ip
 
-      # Inputs for 'generate_new_config'
+      # ورودی‌ها برای 'generate_new_config'
       user_id:
         description: 'User ID for new config (e.g., my-friend-01)'
         required: false
@@ -29,7 +28,7 @@ on:
         options:
         - default
         - de # Germany
-        - ir # Iran (if you have a specific IP)
+        - ir # Iran
         default: 'default'
       block_porn:
         description: 'Block adult content via DNS?'
@@ -37,7 +36,7 @@ on:
         type: boolean
         default: false
 
-      # Inputs for 'manually_update_regional_ip'
+      # ورودی‌ها برای 'manually_update_regional_ip'
       target_region:
         description: 'Region to update (e.g., de, ir)'
         required: false
@@ -45,15 +44,11 @@ on:
         description: 'The new clean IP:Port (e.g., 162.159.192.1:2408)'
         required: false
 
-  # Scheduled run for automatic IP scanning
   schedule:
-    # Runs every 4 hours to find the best general-purpose IP
+    # هر ۴ ساعت برای یافتن بهترین IP عمومی اجرا می‌شود
     - cron: '0 */4 * * *'
 
 jobs:
-  # ==========================================================
-  # == JOB 1: Generate a new user configuration
-  # ==========================================================
   generate_config:
     name: "✅ Generate New VPN Config"
     if: github.event.inputs.action == 'generate_new_config' && github.event.inputs.user_id != ''
@@ -81,9 +76,6 @@ jobs:
             exit 1
           fi
 
-  # ==========================================================
-  # == JOB 2: Automatically scan and update the default IP
-  # ==========================================================
   scan_and_update_default_ip:
     name: "🛰️ Scan & Update Default WARP IP"
     if: github.event_name == 'schedule' || github.event.inputs.action == 'scan_and_update_default_ip'
@@ -99,9 +91,7 @@ jobs:
         id: scanner
         run: |
           cd warpscan
-          # Scan with 10 parallel threads for speed
           bash warpscan.sh -p10
-          # The script outputs the best IP to result.csv. We read the first line.
           BEST_IP=$(head -n 1 result.csv | awk -F, '{print $1":"$2}')
           if [[ -z "$BEST_IP" ]]; then
             echo "::error::Scanner failed to find a valid IP."
@@ -120,9 +110,6 @@ jobs:
             --data '{"ip": "${{ steps.scanner.outputs.best_ip }}", "region": "default"}'
           echo "✅ Default IP Updated Successfully!"
 
-  # ==========================================================
-  # == JOB 3: Manually set an IP for a specific region
-  # ==========================================================
   update_regional_ip:
     name: "✏️ Manually Update Regional IP"
     if: github.event.inputs.action == 'manually_update_regional_ip' && github.event.inputs.target_region != '' && github.event.inputs.ip_address != ''
@@ -136,4 +123,3 @@ jobs:
             -H "Content-Type: application/json" \
             --data '{"ip": "${{ github.event.inputs.ip_address }}", "region": "${{ github.event.inputs.target_region }}"}'
           echo "✅ Regional IP updated successfully!"
-
